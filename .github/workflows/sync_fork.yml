@@ -12,33 +12,48 @@ jobs:
     sync_with_upstream:
         name: Sync with Upstream
         runs-on: ubuntu-latest
-        if: ${ github.event.repository.fork }
+        if: ${{ github.event.repository.fork }}
 
         steps:
             - name: Checkout target repo
               uses: actions/checkout@v4
               with:
-                token: ${ secrets.GITHUB_TOKEN }
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  fetch-depth: 0
 
             - name: Sync Upstream
-              uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
-              with:
-                  target_repo_token: ${ secrets.GITHUB_TOKEN }
-                  upstream_sync_repo: huangxd-/danmu_api
-                  upstream_sync_branch: main
-                  target_sync_branch: main
-                  test_mode: false
+              run: |
+                  set -euo pipefail
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
 
-            - name: Check for new commits
-              if: success()
-              run: echo "Sync completed successfully"
+                  git remote add upstream https://github.com/huangxd-/danmu_api.git
+                  git fetch upstream main
+
+                  if git merge-base --is-ancestor upstream/main HEAD; then
+                      echo "Already up to date with upstream."
+                      exit 0
+                  fi
+
+                  git merge upstream/main --no-ff --no-edit
+
+                  # GITHUB_TOKEN 无 workflow 权限，无法推送 .github/workflows 的变更，
+                  # 因此合并后把本仓库的 .github 目录恢复为合并前的内容，只同步上游代码
+                  if ! git diff --quiet HEAD^ HEAD -- .github/; then
+                      git diff --name-only --diff-filter=A HEAD^ HEAD -- .github/ | while read -r f; do
+                          git rm -f -q "$f"
+                      done
+                      git checkout HEAD^ -- .github/
+                      git commit --amend --no-edit
+                  fi
+
+                  git push origin main
 
             - name: Check for Failure
               if: failure()
               run: |
                   echo "[Error] Sync failed. This might be due to:"
-                  echo "1. Changes in the upstream workflow file"
-                  echo "2. Merge conflicts that need manual resolution"
-                  echo "3. Network issues"
+                  echo "1. Merge conflicts that need manual resolution"
+                  echo "2. Network issues"
                   echo "Please check the logs and consider manual sync if needed."
                   exit 1

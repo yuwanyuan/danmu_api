@@ -4,19 +4,38 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
-    if: github.repository == 'huangxd-/danmu_api'
 
 jobs:
+  # 检查 Docker Hub secrets 是否已配置：fork 未配置时跳过构建，避免每次推送都失败
+  check-secrets:
+    name: Check Docker Hub secrets
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check secrets
+        id: check
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOCKER_USERNAME / DOCKER_PASSWORD secrets 未配置，跳过 Docker 镜像构建与推送"
+          fi
+
   build:
+    name: Build and Push Docker Image
+    needs: check-secrets
+    if: needs.check-secrets.outputs.enabled == 'true'
     runs-on: ubuntu-latest
 
     steps:
       # 检出代码
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # 从 danmu_api/configs/globals.js 中读取版本号
       - name: Read version from globals.js
