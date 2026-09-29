@@ -16,7 +16,7 @@ jobs:
 
         steps:
             - name: Checkout target repo
-              uses: actions/checkout@v4
+                  uses: actions/checkout@v5
               with:
                   token: ${{ secrets.GITHUB_TOKEN }}
                   fetch-depth: 0
@@ -35,10 +35,24 @@ jobs:
                       exit 0
                   fi
 
-                  git merge upstream/main --no-ff --no-edit
+                  # .gitattributes 中 .github/** merge=ours：上游改动本仓库的 workflow 时保留本仓库版本
+                  git config merge.ours.driver true
+
+                  if ! git merge upstream/main --no-ff --no-edit; then
+                      # 仍然冲突且不在 .github 下，说明上游代码需要人工介入
+                      others=$(git diff --name-only --diff-filter=U | grep -v '^\.github/' || true)
+                      if [ -n "$others" ]; then
+                          echo "::error::上游代码存在无法自动合并的冲突，需要人工解决："
+                          echo "$others"
+                          exit 1
+                      fi
+                      git checkout --ours -- .github/
+                      git add -- .github/
+                      git commit --no-edit
+                  fi
 
                   # GITHUB_TOKEN 无 workflow 权限，无法推送 .github/workflows 的变更，
-                  # 因此合并后把本仓库的 .github 目录恢复为合并前的内容，只同步上游代码
+                  # 因此把 .github 目录恢复为合并前的内容，只同步上游代码
                   if ! git diff --quiet HEAD^ HEAD -- .github/; then
                       git diff --name-only --diff-filter=A HEAD^ HEAD -- .github/ | while read -r f; do
                           git rm -f -q "$f"
@@ -53,7 +67,7 @@ jobs:
               if: failure()
               run: |
                   echo "[Error] Sync failed. This might be due to:"
-                  echo "1. Merge conflicts that need manual resolution"
-                  echo "2. Network issues"
+                  echo "1. 上游代码与本仓库存在冲突（.github 以外的文件需要人工合并）"
+                  echo "2. 网络问题"
                   echo "Please check the logs and consider manual sync if needed."
                   exit 1

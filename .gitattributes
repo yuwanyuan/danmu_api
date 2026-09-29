@@ -1,0 +1,4 @@
+# 合并上游时保留本仓库的 .github 内容。
+# 原因：Actions 使用的 GITHUB_TOKEN 没有 workflow 权限，
+# 无法推送 .github/workflows 的变更，因此本仓库的 workflow 不跟随上游。
+.github/** merge=ours
