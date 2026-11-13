@@ -8,6 +8,10 @@ on:
         - cron: "0 0 * * *"  # 每天午夜执行
     workflow_dispatch:  # 允许手动触发
 
+concurrency:
+    group: fork-sync
+    cancel-in-progress: false
+
 jobs:
     sync_with_upstream:
         name: Sync with Upstream
@@ -27,7 +31,12 @@ jobs:
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
-                  git remote add upstream https://github.com/huangxd-/danmu_api.git
+                  UPSTREAM_URL="https://github.com/huangxd-/danmu_api.git"
+                  if git remote get-url upstream >/dev/null 2>&1; then
+                      git remote set-url upstream "$UPSTREAM_URL"
+                  else
+                      git remote add upstream "$UPSTREAM_URL"
+                  fi
                   git fetch upstream main
 
                   if git merge-base --is-ancestor upstream/main HEAD; then
@@ -35,39 +44,43 @@ jobs:
                       exit 0
                   fi
 
-                  # .gitattributes 中 .github/** merge=ours：上游改动本仓库的 workflow 时保留本仓库版本
+                  # 记录合并前的 HEAD，后面用它把 .github 整体还原
+                  PRE_MERGE_HEAD="$(git rev-parse HEAD)"
+
+                  # .gitattributes 里的 merge=ours 只在"双方都改同一文件"时生效；
+                  # 上游新增/删除 .github 下的文件属于 modify/delete 冲突，合并驱动不接管，
+                  # 所以这里统一按"保留本仓库版本（含删除）"处理。
                   git config merge.ours.driver true
 
-                  if ! git merge upstream/main --no-ff --no-edit; then
-                      # 仍然冲突且不在 .github 下，说明上游代码需要人工介入
-                      others=$(git diff --name-only --diff-filter=U | grep -v '^\.github/' || true)
+                  merge_failed=0
+                  git merge --no-ff --no-commit upstream/main || merge_failed=1
+
+                  if [ "$merge_failed" -eq 1 ]; then
+                      others="$(git diff --name-only --diff-filter=U | grep -v '^\.github/' || true)"
                       if [ -n "$others" ]; then
                           echo "::error::上游代码存在无法自动合并的冲突，需要人工解决："
                           echo "$others"
                           exit 1
                       fi
-                      git checkout --ours -- .github/
-                      git add -- .github/
-                      git commit --no-edit
                   fi
 
-                  # GITHUB_TOKEN 无 workflow 权限，无法推送 .github/workflows 的变更，
-                  # 因此把 .github 目录恢复为合并前的内容，只同步上游代码
-                  if ! git diff --quiet HEAD^ HEAD -- .github/; then
-                      git diff --name-only --diff-filter=A HEAD^ HEAD -- .github/ | while read -r f; do
-                          git rm -f -q "$f"
-                      done
-                      git checkout HEAD^ -- .github/
-                      git commit --amend --no-edit
+                  # GITHUB_TOKEN 没有 workflow 权限，无法推送 .github/workflows 的变更，
+                  # 因此把 .github 目录整体恢复为合并前的内容（删除上游新增文件、恢复被上游删掉的文件）
+                  git rm -rfq --ignore-unmatch -- .github
+                  git checkout "$PRE_MERGE_HEAD" -- .github
+                  git add -A -- .github
+
+                  if [ -f .git/MERGE_HEAD ]; then
+                      git commit --no-edit
+                  elif ! git diff --cached --quiet; then
+                      git commit -m "chore: 同步上游代码（保留本仓库 .github）"
+                  fi
+
+                  # 兜底：确保没有把 .github/workflows 的变更带进提交
+                  if ! git diff --quiet "$PRE_MERGE_HEAD" HEAD -- .github/; then
+                      echo "::error::.github 目录被意外修改，请检查合并逻辑"
+                      git diff --name-only "$PRE_MERGE_HEAD" HEAD -- .github/
+                      exit 1
                   fi
 
                   git push origin main
-
-            - name: Check for Failure
-              if: failure()
-              run: |
-                  echo "[Error] Sync failed. This might be due to:"
-                  echo "1. 上游代码与本仓库存在冲突（.github 以外的文件需要人工合并）"
-                  echo "2. 网络问题"
-                  echo "Please check the logs and consider manual sync if needed."
-                  exit 1
